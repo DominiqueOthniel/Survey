@@ -18,7 +18,6 @@ import GPSTest from "./pages/GPSTest";
 import GPS from "./pages/GPS";
 import Tracking from "./pages/Tracking";
 import ParcelShipping from "./pages/ParcelShipping";
-import Bank from "./pages/Bank";
 import Caisse from "./pages/Caisse";
 import Credits from "./pages/Credits";
 import AuditLogs from "./pages/AuditLogs";
@@ -53,7 +52,7 @@ const App = () => (
               <Route path="/gps" element={<ProtectedRoute><Layout><GPS /></Layout></ProtectedRoute>} />
               <Route path="/suivi" element={<ProtectedRoute><Layout><Tracking /></Layout></ProtectedRoute>} />
               <Route path="/envoi-colis" element={<ProtectedRoute><Layout><ParcelShipping /></Layout></ProtectedRoute>} />
-              <Route path="/banque" element={<ProtectedRoute><Layout><Bank /></Layout></ProtectedRoute>} />
+              <Route path="/banque" element={<ProtectedRoute><Navigate to="/caisse" replace /></ProtectedRoute>} />
               <Route path="/caisse" element={<ProtectedRoute><Layout><Caisse /></Layout></ProtectedRoute>} />
               <Route path="/credits" element={<ProtectedRoute><Layout><Credits /></Layout></ProtectedRoute>} />
               <Route path="/historique" element={<ProtectedRoute><Layout><AuditLogs /></Layout></ProtectedRoute>} />

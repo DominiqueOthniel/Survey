@@ -10,10 +10,12 @@ import { Driver } from './driver.entity';
 
 export type ParcelExpeditionLotJson = {
   id: string;
-  entreprise: string;
-  marchandise: string;
-  poidsKg?: number;
-  notes?: string;
+  clients: string;
+  unite: string;
+  quantite: number;
+  prixUnitaire: number;
+  montant: number;
+  observations?: string;
 };
 
 export type ParcelExpeditionStatus =

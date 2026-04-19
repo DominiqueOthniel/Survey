@@ -53,10 +53,12 @@ export interface Trip {
 
 export interface ParcelExpeditionLot {
   id: string;
-  entreprise: string;
-  marchandise: string;
-  poidsKg: number;
-  notes?: string;
+  clients: string;
+  unite: string;
+  quantite: number;
+  prixUnitaire: number;
+  montant: number;
+  observations?: string;
 }
 
 export interface ParcelExpedition {
@@ -166,6 +168,50 @@ function normalizeTruck(r: Record<string, unknown>): Truck {
   };
 }
 
+function roundMontantFcfa(q: number, pu: number): number {
+  const n = q * pu;
+  return Math.round(Number.isFinite(n) ? n : 0);
+}
+
+function normalizeParcelLot(row: Record<string, unknown>): ParcelExpeditionLot {
+  const id = String(row.id ?? '');
+  const isNew =
+    'clients' in row && 'unite' in row && 'quantite' in row && 'prixUnitaire' in row;
+  if (isNew) {
+    const quantite = parseNum(row.quantite);
+    const prixUnitaire = parseNum(row.prixUnitaire);
+    return {
+      id,
+      clients: String(row.clients ?? ''),
+      unite: String(row.unite ?? ''),
+      quantite,
+      prixUnitaire,
+      montant: roundMontantFcfa(quantite, prixUnitaire),
+      observations: row.observations ? String(row.observations) : undefined,
+    };
+  }
+  const entreprise = String(row.entreprise ?? '');
+  const marchandise = String(row.marchandise ?? '');
+  const poids = parseNum(row.poidsKg);
+  const notes = row.notes ? String(row.notes) : '';
+  const legacyObs = [
+    marchandise ? `Ancienne marchandise : ${marchandise}` : '',
+    poids > 0 ? `Poids : ${poids} kg` : '',
+    notes,
+  ]
+    .filter(Boolean)
+    .join(' — ');
+  return {
+    id,
+    clients: entreprise,
+    unite: 'lot',
+    quantite: 1,
+    prixUnitaire: 0,
+    montant: 0,
+    observations: legacyObs || undefined,
+  };
+}
+
 function normalizeTrip(r: Record<string, unknown>): Trip {
   return {
     id: String(r.id),
@@ -198,13 +244,7 @@ function normalizeParcelExpedition(r: Record<string, unknown>): ParcelExpedition
         : '';
   const lotsRaw = r.lots;
   const lots: ParcelExpeditionLot[] = Array.isArray(lotsRaw)
-    ? (lotsRaw as Record<string, unknown>[]).map((row) => ({
-        id: String(row.id ?? ''),
-        entreprise: String(row.entreprise ?? ''),
-        marchandise: String(row.marchandise ?? ''),
-        poidsKg: parseNum(row.poidsKg),
-        notes: row.notes ? String(row.notes) : undefined,
-      }))
+    ? (lotsRaw as Record<string, unknown>[]).map((row) => normalizeParcelLot(row))
     : [];
   const dateDepart = String(r.dateDepart ?? '');
   const dateArrivee = r.dateArrivee != null && String(r.dateArrivee) !== '' ? String(r.dateArrivee) : '';

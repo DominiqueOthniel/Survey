@@ -217,10 +217,12 @@ export const tripsApi = {
 
 export interface ParcelExpeditionLotPayload {
   id?: string;
-  entreprise: string;
-  marchandise: string;
-  poidsKg?: number;
-  notes?: string;
+  clients: string;
+  unite: string;
+  quantite: number;
+  prixUnitaire: number;
+  montant?: number;
+  observations?: string;
 }
 
 export interface ParcelExpeditionPayload {

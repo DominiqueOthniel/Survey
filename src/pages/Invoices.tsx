@@ -231,7 +231,7 @@ export default function Invoices() {
     if (paymentAmount > 0 && isPaiementVersBanque(mode)) {
       const accs = getBankAccounts();
       if (accs.length === 0) {
-        toast.error('Créez au moins un compte dans Banque pour enregistrer un virement.');
+        toast.error('Créez au moins un compte bancaire pour enregistrer un virement.');
         return;
       }
       if (!paymentCompteBanqueId) {
@@ -300,7 +300,7 @@ export default function Invoices() {
             }
           } catch {
             toast.error(
-              'Facture mise à jour, mais l’écriture banque a échoué. Vérifie la page Banque ou réessaie.',
+              'Facture mise à jour, mais l’écriture banque a échoué. Vérifiez la caisse ou réessayez.',
             );
           }
         } else if (paymentAmount > 0 && !isPaiementVersBanque(mode)) {
@@ -2982,7 +2982,7 @@ export default function Invoices() {
                   </div>
                   {getBankAccounts().length === 0 ? (
                     <p className="text-sm text-destructive">
-                      Aucun compte enregistré. Créez-en un dans <strong>Banque</strong>.
+                      Aucun compte bancaire enregistré. Ajoutez-en un (données / API) pour les virements.
                     </p>
                   ) : (
                     <>

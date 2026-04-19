@@ -125,7 +125,7 @@ export default function Caisse() {
     refreshBankAccounts();
   }, [transactions]);
 
-  /** Soldes bancaires recalculés (même logique que l’écran Banque) — dynamique avec dépôts, retraits, caisse liée. */
+  /** Soldes bancaires recalculés (mouvements API) — dynamique avec dépôts, retraits, caisse liée. */
   const statsBanque = useMemo(() => {
     const accs = getBankAccounts();
     const txs = getBankTransactions();
@@ -628,7 +628,7 @@ export default function Caisse() {
                               Prélever sur un compte bancaire
                             </Label>
                             <p className="text-xs text-muted-foreground mt-0.5">
-                              Le montant est déduit du solde disponible du compte (même mouvement enregistré dans Banque).
+                              Le montant est déduit du solde disponible du compte (mouvement bancaire synchronisé).
                             </p>
                           </div>
                         </div>
@@ -786,7 +786,7 @@ export default function Caisse() {
               {statsBanque.totalDisponible.toLocaleString('fr-FR')} FCFA
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              Somme des comptes — mis à jour via Banque et les prélèvements caisse
+              Somme des comptes — mis à jour via l’API et les prélèvements caisse
             </p>
             {statsBanque.parCompte.length > 1 && (
               <ul className="mt-2 text-xs text-muted-foreground space-y-0.5 max-h-20 overflow-y-auto">

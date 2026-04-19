@@ -18,29 +18,45 @@ export class ParcelExpeditionsService {
     private readonly repo: Repository<ParcelExpedition>,
   ) {}
 
+  private roundMontantFcfa(q: number, pu: number): number {
+    const n = q * pu;
+    return Math.round(Number.isFinite(n) ? n : 0);
+  }
+
   private normalizeLots(
     dtoLots: Array<{
       id?: string;
-      entreprise?: string;
-      marchandise?: string;
-      poidsKg?: number;
-      notes?: string;
+      clients: string;
+      unite: string;
+      quantite: number;
+      prixUnitaire: number;
+      montant?: number;
+      observations?: string;
     }>,
   ): ParcelExpeditionLotJson[] {
     return (dtoLots || []).map((l) => {
-      const entreprise = (l.entreprise ?? '').trim();
-      const marchandise = (l.marchandise ?? '').trim();
-      if (!entreprise || !marchandise) {
-        throw new BadRequestException(
-          'Chaque lot doit avoir une entreprise et une marchandise renseignées',
-        );
+      const clients = (l.clients ?? '').trim();
+      const unite = (l.unite ?? '').trim();
+      const quantite = Number(l.quantite);
+      const prixUnitaire = Number(l.prixUnitaire);
+      if (!clients || !unite) {
+        throw new BadRequestException('Chaque ligne doit avoir des clients et une unité renseignés');
       }
+      if (!Number.isFinite(quantite) || quantite <= 0) {
+        throw new BadRequestException('La quantité doit être un nombre strictement positif');
+      }
+      if (!Number.isFinite(prixUnitaire) || prixUnitaire < 0) {
+        throw new BadRequestException('Le prix unitaire doit être un nombre positif ou nul');
+      }
+      const montant = this.roundMontantFcfa(quantite, prixUnitaire);
       return {
         id: l.id && l.id.length > 0 ? l.id : uuidv4(),
-        entreprise,
-        marchandise,
-        poidsKg: l.poidsKg,
-        notes: l.notes?.trim() || undefined,
+        clients,
+        unite,
+        quantite,
+        prixUnitaire,
+        montant,
+        observations: l.observations?.trim() || undefined,
       };
     });
   }

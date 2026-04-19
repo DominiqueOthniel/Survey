@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -37,7 +36,6 @@ import {
   FileDown,
   FileText,
   Truck,
-  Landmark,
   MapPin,
   Building2,
   MinusCircle,
@@ -74,8 +72,33 @@ const EXPEDITION_SORT_OPTIONS = [
   { value: 'date_asc', label: 'Départ (ancien → récent)' },
   { value: 'dest_asc', label: 'Destination A → Z' },
   { value: 'statut_asc', label: 'Statut A → Z' },
-  { value: 'lots_desc', label: 'Nombre d’entreprises (↓)' },
+  { value: 'lots_desc', label: 'Nombre d’opérations (↓)' },
+  { value: 'montant_desc', label: 'Montant total (↓)' },
 ] as const;
+
+const UNITE_SUGGESTIONS = [
+  'carton',
+  'sac',
+  'palette',
+  'colis',
+  'pièce',
+  'caisse',
+  'm³',
+  'kg',
+] as const;
+
+function roundMontantFcfa(q: number, pu: number): number {
+  const n = q * pu;
+  return Math.round(Number.isFinite(n) ? n : 0);
+}
+
+function formatFcfa(n: number): string {
+  return `${Math.round(n).toLocaleString('fr-FR')} FCFA`;
+}
+
+function sumExpeditionMontant(lots: ParcelExpeditionLot[]): number {
+  return lots.reduce((s, l) => s + (Number.isFinite(l.montant) ? l.montant : 0), 0);
+}
 
 function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -123,10 +146,12 @@ function statutBadgeVariant(s: TripStatus): 'default' | 'secondary' | 'destructi
 
 const emptyLot = (): ParcelExpeditionLot => ({
   id: newId(),
-  entreprise: '',
-  marchandise: '',
-  poidsKg: 0,
-  notes: '',
+  clients: '',
+  unite: 'carton',
+  quantite: 1,
+  prixUnitaire: 0,
+  montant: 0,
+  observations: '',
 });
 
 export default function ParcelShipping() {
@@ -141,7 +166,7 @@ export default function ParcelShipping() {
     updateParcelExpedition,
     deleteParcelExpedition,
   } = useApp();
-  const { canManageFleet, canManageAccounting } = useAuth();
+  const { canManageFleet } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [destPickerOpen, setDestPickerOpen] = useState(false);
   const [editing, setEditing] = useState<ParcelExpedition | null>(null);
@@ -255,7 +280,18 @@ export default function ParcelShipping() {
   const updateLot = (lotId: string, patch: Partial<ParcelExpeditionLot>) => {
     setForm((f) => ({
       ...f,
-      lots: f.lots.map((l) => (l.id === lotId ? { ...l, ...patch } : l)),
+      lots: f.lots.map((l) => {
+        if (l.id !== lotId) return l;
+        const next = { ...l, ...patch };
+        if ('quantite' in patch || 'prixUnitaire' in patch) {
+          const q = Number.isFinite(next.quantite) ? Math.max(0, next.quantite) : 0;
+          const pu = Number.isFinite(next.prixUnitaire) ? Math.max(0, next.prixUnitaire) : 0;
+          next.quantite = q;
+          next.prixUnitaire = pu;
+          next.montant = roundMontantFcfa(q, pu);
+        }
+        return next;
+      }),
     }));
   };
 
@@ -289,16 +325,22 @@ export default function ParcelShipping() {
       return;
     }
     const lotsClean = form.lots
-      .map((l) => ({
-        ...l,
-        entreprise: l.entreprise.trim(),
-        marchandise: l.marchandise.trim(),
-        notes: l.notes?.trim() || undefined,
-        poidsKg: Number.isFinite(l.poidsKg) ? Math.max(0, l.poidsKg) : 0,
-      }))
-      .filter((l) => l.entreprise || l.marchandise);
+      .map((l) => {
+        const quantite = Number.isFinite(l.quantite) ? l.quantite : 0;
+        const prixUnitaire = Number.isFinite(l.prixUnitaire) ? Math.max(0, l.prixUnitaire) : 0;
+        return {
+          ...l,
+          clients: l.clients.trim(),
+          unite: l.unite.trim(),
+          quantite,
+          prixUnitaire,
+          montant: roundMontantFcfa(quantite, prixUnitaire),
+          observations: l.observations?.trim() || undefined,
+        };
+      })
+      .filter((l) => l.clients && l.unite && l.quantite > 0);
     if (lotsClean.length === 0) {
-      toast.error('Ajoutez au moins une ligne entreprise / marchandise.');
+      toast.error('Ajoutez au moins une ligne avec clients, unité et quantité valides.');
       return;
     }
 
@@ -319,10 +361,12 @@ export default function ParcelShipping() {
       statut: form.statut,
       lots: lotsClean.map((l) => ({
         id: l.id,
-        entreprise: l.entreprise,
-        marchandise: l.marchandise,
-        poidsKg: l.poidsKg,
-        notes: l.notes,
+        clients: l.clients,
+        unite: l.unite,
+        quantite: l.quantite,
+        prixUnitaire: l.prixUnitaire,
+        montant: l.montant,
+        observations: l.observations,
       })),
       description: form.description.trim() || undefined,
       dateCreation: editing?.dateCreation,
@@ -434,7 +478,10 @@ export default function ParcelShipping() {
         ex.reference,
         ex.destination,
         ex.description ?? '',
-        ...ex.lots.map((l) => `${l.entreprise} ${l.marchandise} ${l.notes ?? ''}`),
+        ...ex.lots.map(
+          (l) =>
+            `${l.clients} ${l.unite} ${l.quantite} ${l.prixUnitaire} ${l.observations ?? ''}`,
+        ),
       ]
         .join(' ')
         .toLowerCase();
@@ -463,6 +510,11 @@ export default function ParcelShipping() {
         return stableSort(list, (a, b) => frCollator.compare(a.statut, b.statut));
       case 'lots_desc':
         return stableSort(list, (a, b) => b.lots.length - a.lots.length);
+      case 'montant_desc':
+        return stableSort(
+          list,
+          (a, b) => sumExpeditionMontant(b.lots) - sumExpeditionMontant(a.lots),
+        );
       case 'date_desc':
       default:
         return stableSort(list, (a, b) => parseDateMs(b.dateDepart) - parseDateMs(a.dateDepart));
@@ -497,11 +549,20 @@ export default function ParcelShipping() {
         { header: 'Statut', value: (ex) => formatTripStatusFr(ex.statut) },
         { header: 'Chauffeur', value: (ex) => driverLabel(ex.chauffeurId) },
         { header: 'Camions', value: (ex) => truckBits(ex.tracteurId, ex.remorqueuseId) },
-        { header: 'Nb entreprises', value: (ex) => ex.lots.length },
+        { header: 'Nb opérations', value: (ex) => ex.lots.length },
         {
-          header: 'Détail marchandises',
+          header: 'Total FCFA',
+          value: (ex) => sumExpeditionMontant(ex.lots).toLocaleString('fr-FR'),
+        },
+        {
+          header: 'Détail (clients / unité / qté / PU / montant)',
           value: (ex) =>
-            ex.lots.map((l) => `${l.entreprise}: ${l.marchandise}`).join(' | '),
+            ex.lots
+              .map(
+                (l) =>
+                  `${l.clients}: ${l.quantite} ${l.unite} × ${l.prixUnitaire} = ${l.montant}`,
+              )
+              .join(' | '),
         },
       ],
       rows: sorted,
@@ -520,6 +581,12 @@ export default function ParcelShipping() {
       accentColor: '#0284c7',
       totals: [
         { label: 'Expéditions (liste)', value: sorted.length, style: 'neutral', icon: EMOJI.liste },
+        {
+          label: 'CA liste (FCFA)',
+          value: sorted.reduce((s, ex) => s + sumExpeditionMontant(ex.lots), 0).toLocaleString('fr-FR'),
+          style: 'neutral',
+          icon: EMOJI.liste,
+        },
         { label: 'En cours + planifiées', value: counts.planifie + counts.en_cours, style: 'neutral', icon: EMOJI.date },
         { label: 'Terminées', value: counts.termine, style: 'positive', icon: EMOJI.ok },
       ],
@@ -528,7 +595,7 @@ export default function ParcelShipping() {
         { header: 'Vers', value: (ex) => ex.destination },
         { header: 'Départ', value: (ex) => new Date(ex.dateDepart).toLocaleDateString('fr-FR') },
         { header: 'Statut', value: (ex) => formatTripStatusFr(ex.statut) },
-        { header: 'Clients', value: (ex) => `${ex.lots.length} entreprise(s)` },
+        { header: 'Montant total', value: (ex) => formatFcfa(sumExpeditionMontant(ex.lots)) },
       ],
       rows: sorted,
     });
@@ -538,7 +605,7 @@ export default function ParcelShipping() {
     <div className="space-y-6 p-1">
       <PageHeader
         title="Envoi colis"
-        description="Expéditions groupées depuis Douala : un camion, plusieurs entreprises et marchandises pour une même destination (comme un trajet, multi-clients)."
+        description="Expéditions groupées depuis Douala : pour chaque ligne, clients, unité, quantité, prix unitaire et montant (FCFA), avec observations — idéal pour le suivi commercial du colis."
         icon={Package}
         gradient="from-sky-500/20 via-cyan-500/10 to-transparent"
         actions={
@@ -557,7 +624,7 @@ export default function ParcelShipping() {
                     Nouvelle expédition
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="w-[95vw] max-w-3xl max-h-[90vh] overflow-y-auto">
+                <DialogContent className="w-[98vw] max-w-5xl max-h-[90vh] overflow-y-auto">
                   <DialogHeader>
                     <DialogTitle>
                       {editing ? 'Modifier l’expédition' : 'Nouvelle expédition colis'}
@@ -571,7 +638,7 @@ export default function ParcelShipping() {
                       </p>
                       <p className="text-muted-foreground mt-1">
                         Toutes les expéditions partent de Douala. Choisissez la destination et regroupez les
-                        marchandises de plusieurs entreprises sur un seul départ.
+                        opérations clients (plusieurs lignes tarifées) sur un seul départ.
                       </p>
                     </div>
 
@@ -748,11 +815,17 @@ export default function ParcelShipping() {
                       </div>
                     </div>
 
+                    <datalist id="unites-colis-suggestions">
+                      {UNITE_SUGGESTIONS.map((u) => (
+                        <option key={u} value={u} />
+                      ))}
+                    </datalist>
+
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <Label className="flex items-center gap-2">
                           <Building2 className="h-4 w-4" />
-                          Marchandises par entreprise
+                          Lignes d’opération (clients &amp; tarification)
                         </Label>
                         <Button type="button" variant="outline" size="sm" onClick={addLotRow}>
                           <Plus className="h-3 w-3 mr-1" />
@@ -760,13 +833,15 @@ export default function ParcelShipping() {
                         </Button>
                       </div>
                       <div className="rounded-md border overflow-x-auto">
-                        <Table className="min-w-[640px]">
+                        <Table className="min-w-[920px]">
                           <TableHeader>
                             <TableRow>
-                              <TableHead>Entreprise *</TableHead>
-                              <TableHead>Marchandise *</TableHead>
-                              <TableHead className="w-24">Poids kg</TableHead>
-                              <TableHead>Notes</TableHead>
+                              <TableHead className="min-w-[140px]">Client(s) *</TableHead>
+                              <TableHead className="min-w-[100px]">Unité *</TableHead>
+                              <TableHead className="w-24 text-right">Qté *</TableHead>
+                              <TableHead className="w-32 text-right">Prix unit. *</TableHead>
+                              <TableHead className="w-36 text-right">Montant</TableHead>
+                              <TableHead className="min-w-[160px]">Observations</TableHead>
                               <TableHead className="w-12 text-right" />
                             </TableRow>
                           </TableHeader>
@@ -775,42 +850,61 @@ export default function ParcelShipping() {
                               <TableRow key={lot.id}>
                                 <TableCell className="align-top">
                                   <Input
-                                    value={lot.entreprise}
+                                    value={lot.clients}
                                     onChange={(e) =>
-                                      updateLot(lot.id, { entreprise: e.target.value })
+                                      updateLot(lot.id, { clients: e.target.value })
                                     }
-                                    placeholder="Ex. Société A (nom tel que dans Tiers)"
+                                    placeholder="Ex. M. Ngo, Société Kribi"
                                   />
                                 </TableCell>
                                 <TableCell className="align-top">
                                   <Input
-                                    value={lot.marchandise}
+                                    list="unites-colis-suggestions"
+                                    value={lot.unite}
                                     onChange={(e) =>
-                                      updateLot(lot.id, { marchandise: e.target.value })
+                                      updateLot(lot.id, { unite: e.target.value })
                                     }
-                                    placeholder="Ex. palettes ciment"
+                                    placeholder="carton, sac…"
                                   />
                                 </TableCell>
                                 <TableCell className="align-top">
                                   <Input
                                     type="number"
-                                    min={0}
-                                    step={0.1}
-                                    value={lot.poidsKg}
+                                    min={0.01}
+                                    step={0.01}
+                                    className="text-right tabular-nums"
+                                    value={lot.quantite}
                                     onChange={(e) =>
                                       updateLot(lot.id, {
-                                        poidsKg: parseFloat(e.target.value) || 0,
+                                        quantite: parseFloat(e.target.value) || 0,
                                       })
                                     }
                                   />
                                 </TableCell>
                                 <TableCell className="align-top">
                                   <Input
-                                    value={lot.notes ?? ''}
+                                    type="number"
+                                    min={0}
+                                    step={100}
+                                    className="text-right tabular-nums"
+                                    value={lot.prixUnitaire}
                                     onChange={(e) =>
-                                      updateLot(lot.id, { notes: e.target.value })
+                                      updateLot(lot.id, {
+                                        prixUnitaire: parseFloat(e.target.value) || 0,
+                                      })
                                     }
-                                    placeholder="Optionnel"
+                                  />
+                                </TableCell>
+                                <TableCell className="align-top text-right tabular-nums text-sm font-medium pt-2.5">
+                                  {formatFcfa(lot.montant)}
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <Input
+                                    value={lot.observations ?? ''}
+                                    onChange={(e) =>
+                                      updateLot(lot.id, { observations: e.target.value })
+                                    }
+                                    placeholder="Fragile, bon de livraison…"
                                   />
                                 </TableCell>
                                 <TableCell className="text-right align-top">
@@ -829,6 +923,14 @@ export default function ParcelShipping() {
                             ))}
                           </TableBody>
                         </Table>
+                      </div>
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border bg-muted/20 px-3 py-2 text-sm">
+                        <span className="text-muted-foreground">
+                          Montant = quantité × prix unitaire (arrondi FCFA).
+                        </span>
+                        <span className="font-semibold tabular-nums">
+                          Sous-total : {formatFcfa(sumExpeditionMontant(form.lots))}
+                        </span>
                       </div>
                     </div>
 
@@ -864,20 +966,6 @@ export default function ParcelShipping() {
           </div>
         }
       />
-
-      {canManageAccounting && (
-        <p className="text-sm text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
-          <Landmark className="inline h-4 w-4 shrink-0" />
-          Comptes et mouvements bancaires :{' '}
-          <Link
-            to="/banque"
-            className="inline-flex items-center gap-1 font-medium text-sky-700 dark:text-sky-400 underline-offset-4 hover:underline"
-          >
-            Banque
-          </Link>
-          .
-        </p>
-      )}
 
       <Card className="shadow-md">
         <CardHeader className="bg-gradient-to-br from-background to-muted/20 pb-3">
@@ -919,7 +1007,7 @@ export default function ParcelShipping() {
               <Input
                 id="parcel-search"
                 className="pl-9"
-                placeholder="Référence, destination, entreprise, marchandise, notes…"
+                placeholder="Référence, destination, clients, unité, montants…"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -1076,7 +1164,7 @@ export default function ParcelShipping() {
         </CardHeader>
         <CardContent>
           <div className="rounded-md border overflow-x-auto">
-            <Table className="min-w-[900px]">
+            <Table className="min-w-[1020px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>Réf.</TableHead>
@@ -1084,7 +1172,8 @@ export default function ParcelShipping() {
                   <TableHead>Départ</TableHead>
                   <TableHead>Chauffeur</TableHead>
                   <TableHead>Camions</TableHead>
-                  <TableHead className="text-center">Entreprises</TableHead>
+                  <TableHead className="text-center">Lignes</TableHead>
+                  <TableHead className="text-right">Total FCFA</TableHead>
                   <TableHead>Statut</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -1092,7 +1181,7 @@ export default function ParcelShipping() {
               <TableBody>
                 {sorted.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                    <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">
                       <Truck className="h-10 w-10 mx-auto mb-3 opacity-40" />
                       {parcelExpeditions.length === 0
                         ? 'Aucune expédition. Créez un envoi groupé Douala → destination.'
@@ -1110,7 +1199,7 @@ export default function ParcelShipping() {
                         <span className="text-muted-foreground"> → </span>
                         <span>{ex.destination}</span>
                         <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                          {ex.lots.map((l) => l.entreprise).filter(Boolean).join(', ') || '—'}
+                          {ex.lots.map((l) => l.clients).filter(Boolean).join(' · ') || '—'}
                         </p>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-sm">
@@ -1121,6 +1210,9 @@ export default function ParcelShipping() {
                         {truckBits(ex.tracteurId, ex.remorqueuseId)}
                       </TableCell>
                       <TableCell className="text-center tabular-nums">{ex.lots.length}</TableCell>
+                      <TableCell className="text-right tabular-nums text-sm font-medium">
+                        {formatFcfa(sumExpeditionMontant(ex.lots))}
+                      </TableCell>
                       <TableCell>
                         <Badge variant={statutBadgeVariant(ex.statut)}>
                           {formatTripStatusFr(ex.statut)}

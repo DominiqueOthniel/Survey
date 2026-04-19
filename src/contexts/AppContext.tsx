@@ -102,6 +102,7 @@ export interface Invoice {
   id: string;
   numero: string;
   trajetId?: string;
+  parcelExpeditionId?: string;
   expenseId?: string;
   statut: InvoiceStatus;
   montantHT: number;
@@ -292,6 +293,7 @@ function normalizeInvoice(r: Record<string, unknown>): Invoice {
     id: String(r.id),
     numero: String(r.numero),
     trajetId: r.trajetId ? String(r.trajetId) : undefined,
+    parcelExpeditionId: r.parcelExpeditionId ? String(r.parcelExpeditionId) : undefined,
     expenseId: r.expenseId ? String(r.expenseId) : undefined,
     statut: r.statut as InvoiceStatus,
     montantHT: parseNum(r.montantHT),

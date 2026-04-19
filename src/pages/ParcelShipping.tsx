@@ -96,6 +96,12 @@ function formatFcfa(n: number): string {
   return `${Math.round(n).toLocaleString('fr-FR')} FCFA`;
 }
 
+function dateLocaleOrDash(iso?: string): string {
+  if (!iso?.trim()) return '—';
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? '—' : new Date(iso).toLocaleDateString('fr-FR');
+}
+
 function sumExpeditionMontant(lots: ParcelExpeditionLot[]): number {
   return lots.reduce((s, l) => s + (Number.isFinite(l.montant) ? l.montant : 0), 0);
 }
@@ -405,6 +411,12 @@ export default function ParcelShipping() {
     return d ? `${d.prenom} ${d.nom}` : '—';
   };
 
+  const driverPhone = (id: string) => {
+    const d = drivers.find((x) => x.id === id);
+    const tel = d?.telephone?.trim();
+    return tel || '—';
+  };
+
   const truckBits = (tracteurId?: string, remorqueuseId?: string) => {
     const bits: string[] = [];
     if (tracteurId) {
@@ -544,24 +556,33 @@ export default function ParcelShipping() {
       filtersDescription: exportSortLine,
       columns: [
         { header: 'Réf.', value: (ex) => ex.reference },
+        { header: 'Origine', value: (ex) => ex.origine },
         { header: 'Destination', value: (ex) => ex.destination },
-        { header: 'Départ', value: (ex) => new Date(ex.dateDepart).toLocaleDateString('fr-FR') },
+        { header: 'Départ', value: (ex) => dateLocaleOrDash(ex.dateDepart) },
+        { header: 'Arrivée', value: (ex) => dateLocaleOrDash(ex.dateArrivee) },
+        { header: 'Création fiche', value: (ex) => dateLocaleOrDash(ex.dateCreation) },
         { header: 'Statut', value: (ex) => formatTripStatusFr(ex.statut) },
         { header: 'Chauffeur', value: (ex) => driverLabel(ex.chauffeurId) },
-        { header: 'Camions', value: (ex) => truckBits(ex.tracteurId, ex.remorqueuseId) },
+        { header: 'Tél. chauffeur', value: (ex) => driverPhone(ex.chauffeurId) },
+        { header: 'Camions (tract. + rem.)', value: (ex) => truckBits(ex.tracteurId, ex.remorqueuseId) },
         { header: 'Nb opérations', value: (ex) => ex.lots.length },
         {
           header: 'Total FCFA',
           value: (ex) => sumExpeditionMontant(ex.lots).toLocaleString('fr-FR'),
         },
         {
-          header: 'Détail (clients / unité / qté / PU / montant)',
+          header: 'Notes expédition',
+          value: (ex) => (ex.description?.trim() ? ex.description : '—'),
+        },
+        {
+          header: 'Détail lignes (client · unité · qté · PU · montant · obs.)',
           value: (ex) =>
             ex.lots
-              .map(
-                (l) =>
-                  `${l.clients}: ${l.quantite} ${l.unite} × ${l.prixUnitaire} = ${l.montant}`,
-              )
+              .map((l) => {
+                const obs = l.observations?.trim();
+                const base = `${l.clients}: ${l.quantite} ${l.unite} × ${l.prixUnitaire} = ${l.montant}`;
+                return obs ? `${base} (${obs})` : base;
+              })
               .join(' | '),
         },
       ],
@@ -592,10 +613,29 @@ export default function ParcelShipping() {
       ],
       columns: [
         { header: 'Réf.', value: (ex) => ex.reference },
-        { header: 'Vers', value: (ex) => ex.destination },
-        { header: 'Départ', value: (ex) => new Date(ex.dateDepart).toLocaleDateString('fr-FR') },
+        {
+          header: 'Itinéraire',
+          value: (ex) => `${ex.origine} → ${ex.destination}`,
+        },
+        { header: 'Départ', value: (ex) => dateLocaleOrDash(ex.dateDepart) },
+        { header: 'Arrivée', value: (ex) => dateLocaleOrDash(ex.dateArrivee) },
         { header: 'Statut', value: (ex) => formatTripStatusFr(ex.statut) },
-        { header: 'Montant total', value: (ex) => formatFcfa(sumExpeditionMontant(ex.lots)) },
+        { header: 'Chauffeur', value: (ex) => driverLabel(ex.chauffeurId) },
+        { header: 'Tél.', value: (ex) => driverPhone(ex.chauffeurId) },
+        { header: 'Camions', value: (ex) => truckBits(ex.tracteurId, ex.remorqueuseId) },
+        { header: 'Opér.', value: (ex) => ex.lots.length },
+        {
+          header: 'Total',
+          value: (ex) => formatFcfa(sumExpeditionMontant(ex.lots)),
+        },
+        {
+          header: 'Notes',
+          value: (ex) => {
+            const d = ex.description?.trim();
+            if (!d) return '—';
+            return d.length > 100 ? `${d.slice(0, 97)}…` : d;
+          },
+        },
       ],
       rows: sorted,
     });

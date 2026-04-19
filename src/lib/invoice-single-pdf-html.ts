@@ -1,9 +1,15 @@
-import type { Expense, Invoice, Trip } from '@/contexts/AppContext';
+import type { Expense, Invoice, ParcelExpedition, Trip } from '@/contexts/AppContext';
 import { COMPANY_CONTACT, COMPANY_NAME, COMPANY_TAGLINE, TRUCK_LOGO_SVG_MARK } from '@/lib/invoice-branding';
 import { formatTripStatusFr } from '@/lib/sync-utils';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function parcelClientsSummary(pe: ParcelExpedition): string {
+  const raw = pe.lots.map((l) => l.clients?.trim()).filter(Boolean) as string[];
+  const uniq = [...new Set(raw)];
+  return uniq.length ? uniq.join(', ') : '—';
 }
 
 export function buildSingleInvoicePdfInnerHtml(opts: {
@@ -12,11 +18,13 @@ export function buildSingleInvoicePdfInnerHtml(opts: {
   resteAPayer: number;
   trip?: Trip;
   expense?: Expense;
-  driver?: { prenom: string; nom: string } | null;
+  parcelExpedition?: ParcelExpedition | null;
+  driver?: { prenom: string; nom: string; telephone?: string } | null;
   fournisseurNom?: string | null;
   getTruckLabel: (id: string) => string;
 }): string {
-  const { invoice, dejaPaye, resteAPayer, trip, expense, driver, fournisseurNom, getTruckLabel } = opts;
+  const { invoice, dejaPaye, resteAPayer, trip, expense, parcelExpedition, driver, fournisseurNom, getTruckLabel } =
+    opts;
 
   const statusLabel =
     resteAPayer <= 0.01 ? 'Payée' : dejaPaye > 0 ? 'Paiement partiel' : 'En attente';
@@ -24,7 +32,13 @@ export function buildSingleInvoicePdfInnerHtml(opts: {
   const statusFg = resteAPayer <= 0.01 ? '#166534' : dejaPaye > 0 ? '#1d4ed8' : '#a16207';
 
   const partyLabel = expense ? 'Fournisseur' : 'Client';
-  const partyName = expense ? (fournisseurNom || '—') : (trip?.client || '—');
+  const partyName = expense
+    ? fournisseurNom || '—'
+    : trip
+      ? trip.client || '—'
+      : parcelExpedition
+        ? parcelClientsSummary(parcelExpedition)
+        : '—';
 
   let detailBlock = '';
   if (trip) {
@@ -100,6 +114,66 @@ export function buildSingleInvoicePdfInnerHtml(opts: {
                         </tr>
                       </tbody>
                     </table>
+                  </div>
+                </div>`;
+  } else if (parcelExpedition) {
+    const pe = parcelExpedition;
+    const dateArriveeMs = pe.dateArrivee?.trim() ? new Date(pe.dateArrivee).getTime() : NaN;
+    const hasArriveeValide = !Number.isNaN(dateArriveeMs);
+    const lotsRows = pe.lots
+      .map(
+        (l) => `
+                        <tr class="border-t border-gray-200">
+                          <td class="p-2 text-sm">${escapeHtml(l.clients)}</td>
+                          <td class="p-2 text-sm">${escapeHtml(l.unite)}</td>
+                          <td class="p-2 text-sm text-right">${l.quantite.toLocaleString('fr-FR')}</td>
+                          <td class="p-2 text-sm text-right">${l.prixUnitaire.toLocaleString('fr-FR')}</td>
+                          <td class="p-2 text-sm text-right font-semibold">${l.montant.toLocaleString('fr-FR')}</td>
+                          <td class="p-2 text-xs text-gray-600">${l.observations ? escapeHtml(l.observations) : '—'}</td>
+                        </tr>`,
+      )
+      .join('');
+    detailBlock = `
+                <div class="mb-8">
+                  <h3 class="font-bold text-lg mb-4 uppercase" style="letter-spacing:0.06em;font-size:13px;color:#475569;">Détails de l'envoi colis</h3>
+                  <p class="text-sm text-gray-600 mb-3">Réf. <span class="font-semibold text-black">${escapeHtml(pe.reference)}</span> · ${escapeHtml(pe.origine)} → ${escapeHtml(pe.destination)}</p>
+                  <div class="border rounded-lg overflow-hidden" style="border-color:#e2e8f0;">
+                    <table class="w-full">
+                      <thead class="bg-gray-100">
+                        <tr>
+                          <th class="p-2 text-left font-bold text-xs">Client / ligne</th>
+                          <th class="p-2 text-left font-bold text-xs">Unité</th>
+                          <th class="p-2 text-right font-bold text-xs">Qté</th>
+                          <th class="p-2 text-right font-bold text-xs">PU</th>
+                          <th class="p-2 text-right font-bold text-xs">Montant</th>
+                          <th class="p-2 text-left font-bold text-xs">Obs.</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${lotsRows}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="mb-8 grid grid-cols-2 gap-6">
+                  <div>
+                    <p class="font-semibold mb-2">Informations complémentaires</p>
+                    <div class="text-sm space-y-1">
+                      ${driver ? `<p class="text-gray-600">Chauffeur : <span class="text-black">${driver.prenom} ${driver.nom}</span>${driver.telephone ? ` · ${escapeHtml(driver.telephone)}` : ''}</p>` : ''}
+                      ${pe.tracteurId ? `<p class="text-gray-600">Tracteur : <span class="text-black">${getTruckLabel(pe.tracteurId)}</span></p>` : ''}
+                      ${pe.remorqueuseId ? `<p class="text-gray-600">Remorque : <span class="text-black">${getTruckLabel(pe.remorqueuseId)}</span></p>` : ''}
+                      <p class="text-gray-600">Statut expédition : <span class="text-black" style="${pe.statut === 'annule' ? 'color:#b91c1c;font-weight:600;' : ''}">${formatTripStatusFr(pe.statut)}</span></p>
+                      <p class="text-gray-600">Départ : <span class="text-black">${new Date(pe.dateDepart).toLocaleDateString('fr-FR')}</span></p>
+                      ${hasArriveeValide ? `<p class="text-gray-600">Arrivée : <span class="text-black">${new Date(pe.dateArrivee!).toLocaleDateString('fr-FR')}</span></p>` : ''}
+                      ${pe.description ? `<p class="text-gray-600 mt-2">${escapeHtml(pe.description)}</p>` : ''}
+                    </div>
+                  </div>
+                  <div>
+                    ${invoice.modePaiement ? `
+                      <p class="font-semibold mb-2">Référence paiement</p>
+                      <p class="text-sm text-gray-600">Mode : <span class="text-black">${escapeHtml(invoice.modePaiement)}</span></p>
+                    ` : ''}
                   </div>
                 </div>`;
   }

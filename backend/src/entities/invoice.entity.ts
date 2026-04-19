@@ -14,6 +14,9 @@ export class Invoice {
   trajetId?: string;
 
   @Column({ type: 'uuid', nullable: true })
+  parcelExpeditionId?: string;
+
+  @Column({ type: 'uuid', nullable: true })
   expenseId?: string;
 
   @Column({ type: 'varchar', length: 20 })

@@ -2,7 +2,16 @@
  * Utilitaires de synchronisation des données entre les modules
  */
 
-import { Trip, TripStatus, Expense, Driver, Truck, Invoice, DriverTransaction } from '@/contexts/AppContext';
+import {
+  Trip,
+  TripStatus,
+  Expense,
+  Driver,
+  Truck,
+  Invoice,
+  DriverTransaction,
+  ParcelExpedition,
+} from '@/contexts/AppContext';
 
 /** Libellé français du statut de trajet (exports, tableaux). */
 export const formatTripStatusFr = (statut: TripStatus): string => {
@@ -427,6 +436,28 @@ export const getAvailableTripsForInvoicing = (trips: Trip[], invoices: Invoice[]
   return trips.filter(trip => 
     trip.recette > 0 &&
     !invoicedTripIds.has(trip.id)
+  );
+};
+
+/** CA transport facturable sur une expédition colis (somme des lignes). */
+export const sumParcelExpeditionLotsCa = (ex: ParcelExpedition): number => {
+  if (!ex?.lots?.length) return 0;
+  return ex.lots.reduce((s, l) => s + (Number.isFinite(l.montant) ? l.montant : 0), 0);
+};
+
+/** Expéditions colis sans facture, avec CA lignes &gt; 0 (hors annulées). */
+export const getAvailableParcelExpeditionsForInvoicing = (
+  expeditions: ParcelExpedition[],
+  invoices: Invoice[],
+): ParcelExpedition[] => {
+  const invoicedIds = new Set(
+    invoices.map((inv) => inv.parcelExpeditionId).filter((id): id is string => !!id),
+  );
+  return expeditions.filter(
+    (ex) =>
+      ex.statut !== 'annule' &&
+      sumParcelExpeditionLotsCa(ex) > 0 &&
+      !invoicedIds.has(ex.id),
   );
 };
 

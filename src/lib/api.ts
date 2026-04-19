@@ -133,6 +133,7 @@ export interface ExpensePayload {
 export interface InvoicePayload {
   numero: string;
   trajetId?: string;
+  parcelExpeditionId?: string;
   expenseId?: string;
   statut: 'en_attente' | 'payee';
   montantHT: number;

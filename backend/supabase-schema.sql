@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   id UUID PRIMARY KEY,
   numero VARCHAR NOT NULL,
   "trajetId" UUID,
+  "parcelExpeditionId" UUID,
   "expenseId" UUID,
   statut VARCHAR(20) NOT NULL CHECK (statut IN ('en_attente', 'payee')),
   "montantHT" DECIMAL(15, 2) NOT NULL,
@@ -119,6 +120,8 @@ CREATE TABLE IF NOT EXISTS invoices (
 
 CREATE INDEX IF NOT EXISTS idx_invoices_trajet ON invoices("trajetId");
 CREATE INDEX IF NOT EXISTS idx_invoices_expense ON invoices("expenseId");
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS "parcelExpeditionId" UUID;
+CREATE INDEX IF NOT EXISTS idx_invoices_parcel_expedition ON invoices("parcelExpeditionId");
 
 -- 8. bank_accounts (aucune FK)
 CREATE TABLE IF NOT EXISTS bank_accounts (

@@ -121,9 +121,9 @@ export default function Dashboard() {
     { name: 'GPS', href: '/gps', icon: Satellite, color: 'from-blue-500 to-cyan-500', bgColor: 'bg-blue-50 dark:bg-blue-950/30', borderColor: 'border-blue-200 dark:border-blue-800' },
   ];
 
-  // Chiffre d’affaires (montants payés sur factures trajets)
+  // Chiffre d’affaires (montants payés sur factures trajets + envois colis)
   const totalRecettes = invoices
-    .filter(inv => inv.trajetId) // Seulement les factures liées à des trajets
+    .filter((inv) => inv.trajetId || inv.parcelExpeditionId)
     .reduce((sum, inv) => sum + (inv.montantPaye || 0), 0);
   const totalDepenses = expenses.reduce((sum, exp) => sum + exp.montant, 0);
   const totalProfit = totalRecettes - totalDepenses;

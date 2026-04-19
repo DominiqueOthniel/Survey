@@ -10,10 +10,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Input } from '@/components/ui/input';
 import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
-import { Plus, CheckCircle2, Clock, Eye, FileText, Download, Mail, Trash2, DollarSign, AlertCircle, Filter, X, Landmark, Loader2 } from 'lucide-react';
+import { Plus, CheckCircle2, Clock, Eye, FileText, Download, Mail, Trash2, DollarSign, AlertCircle, Filter, X, Landmark, Loader2, Package } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
-import { getAvailableTripsForInvoicing, generateInvoiceNumber as genInvoiceNum, formatTripStatusFr } from '@/lib/sync-utils';
+import {
+  getAvailableTripsForInvoicing,
+  getAvailableParcelExpeditionsForInvoicing,
+  sumParcelExpeditionLotsCa,
+  generateInvoiceNumber as genInvoiceNum,
+  formatTripStatusFr,
+} from '@/lib/sync-utils';
 import PageHeader from '@/components/PageHeader';
 import { exportToExcel, exportToPrintablePDF } from '@/lib/export-utils';
 import { EMOJI } from '@/lib/emoji-palette';
@@ -30,6 +36,7 @@ import { COMPANY_NAME, COMPANY_TAGLINE } from '@/lib/invoice-branding';
 import { buildSingleInvoicePdfInnerHtml } from '@/lib/invoice-single-pdf-html';
 import { frCollator, parseDateMs, stableSort } from '@/lib/list-sort';
 import { ListSortSelect } from '@/components/ListSortSelect';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 
 const INVOICE_SORT_OPTIONS = [
   { value: 'date_desc', label: 'Date création (récent → ancien)' },
@@ -45,7 +52,18 @@ const INVOICE_SORT_OPTIONS = [
 ] as const;
 
 export default function Invoices() {
-  const { invoices, trips, trucks, drivers, expenses, thirdParties, createInvoice, updateInvoice, deleteInvoice } = useApp();
+  const {
+    invoices,
+    trips,
+    trucks,
+    drivers,
+    expenses,
+    thirdParties,
+    parcelExpeditions,
+    createInvoice,
+    updateInvoice,
+    deleteInvoice,
+  } = useApp();
   const { canManageAccounting } = useAuth();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isExpenseInvoiceDialogOpen, setIsExpenseInvoiceDialogOpen] = useState(false);
@@ -56,6 +74,9 @@ export default function Invoices() {
   /** Compte qui reçoit le virement (dialog paiement) */
   const [paymentCompteBanqueId, setPaymentCompteBanqueId] = useState<string>('');
   const [selectedTripId, setSelectedTripId] = useState('');
+  /** Facture liée à un envoi colis (exclusif avec trajet). */
+  const [invoiceMissionKind, setInvoiceMissionKind] = useState<'trip' | 'parcel'>('trip');
+  const [selectedParcelExpeditionId, setSelectedParcelExpeditionId] = useState('');
   const [selectedExpenseId, setSelectedExpenseId] = useState('');
   const [modePaiement, setModePaiement] = useState('');
   const [notes, setNotes] = useState('');
@@ -86,7 +107,11 @@ export default function Invoices() {
 
   // Utiliser la fonction centralisée pour obtenir les trajets disponibles
   const availableTrips = getAvailableTripsForInvoicing(trips, invoices);
-  
+  const availableParcelExpeditions = useMemo(
+    () => getAvailableParcelExpeditionsForInvoicing(parcelExpeditions, invoices),
+    [parcelExpeditions, invoices],
+  );
+
   // Obtenir les dépenses disponibles pour facturation (sans facture existante)
   const availableExpenses = useMemo(() => {
     const invoicedExpenseIds = new Set(invoices.map(inv => inv.expenseId).filter((id): id is string => !!id));
@@ -103,15 +128,29 @@ export default function Invoices() {
   }, [invoices]);
 
   const handleCreateInvoice = async () => {
-    if (!selectedTripId) {
-      toast.error('Veuillez sélectionner un trajet');
-      return;
+    let montantHTInitial = 0;
+    if (invoiceMissionKind === 'trip') {
+      if (!selectedTripId) {
+        toast.error('Veuillez sélectionner un trajet');
+        return;
+      }
+      const trip = trips.find((t) => t.id === selectedTripId);
+      if (!trip) return;
+      montantHTInitial = trip.recette;
+    } else {
+      if (!selectedParcelExpeditionId) {
+        toast.error('Veuillez sélectionner un envoi colis');
+        return;
+      }
+      const ex = parcelExpeditions.find((e) => e.id === selectedParcelExpeditionId);
+      if (!ex) return;
+      montantHTInitial = sumParcelExpeditionLotsCa(ex);
+      if (montantHTInitial <= 0) {
+        toast.error('Le CA des lignes colis doit être supérieur à 0');
+        return;
+      }
     }
 
-    const trip = trips.find(t => t.id === selectedTripId);
-    if (!trip) return;
-
-    const montantHTInitial = trip.recette;
     const montantRemise = montantHTInitial * (remise / 100);
     const montantHTApresRemise = montantHTInitial - montantRemise;
     const montantTVA = montantHTApresRemise * (tva / 100);
@@ -122,7 +161,9 @@ export default function Invoices() {
       try {
         await createInvoice({
           numero: generateInvoiceNumber(),
-          trajetId: selectedTripId,
+          trajetId: invoiceMissionKind === 'trip' ? selectedTripId : undefined,
+          parcelExpeditionId:
+            invoiceMissionKind === 'parcel' ? selectedParcelExpeditionId : undefined,
           statut: 'en_attente',
           montantHT: montantHTInitial,
           remise: remise > 0 ? remise : undefined,
@@ -138,6 +179,8 @@ export default function Invoices() {
         toast.success('Facture créée avec succès');
         setIsDialogOpen(false);
         setSelectedTripId('');
+        setSelectedParcelExpeditionId('');
+        setInvoiceMissionKind('trip');
         setModePaiement('');
         setNotes('');
         setTva(0);
@@ -372,14 +415,21 @@ export default function Invoices() {
         soldeComptePourVirement < paymentAmount,
     );
 
-  const getTripLabel = (tripId: string) => {
+  const getTripLabel = (tripId?: string) => {
+    if (!tripId) return 'N/A';
     const trip = trips.find(t => t.id === tripId);
     if (!trip) return 'N/A';
     return `${trip.origine} → ${trip.destination}`;
   };
 
-  const getTrip = (tripId: string): Trip | undefined => {
+  const getTrip = (tripId?: string): Trip | undefined => {
+    if (!tripId) return undefined;
     return trips.find(t => t.id === tripId);
+  };
+
+  const getParcelExpedition = (id?: string) => {
+    if (!id) return undefined;
+    return parcelExpeditions.find((e) => e.id === id);
   };
 
   const getDriverName = (driverId: string) => {
@@ -403,12 +453,14 @@ export default function Invoices() {
     () =>
       invoices.filter(invoice => {
         const trip = getTrip(invoice.trajetId);
+        const parcelEx = getParcelExpedition(invoice.parcelExpeditionId);
         const expense = getExpense(invoice.expenseId);
 
         // Filtre par type de facture
         if (filters.type) {
           if (filters.type === 'expense' && !invoice.expenseId) return false;
           if (filters.type === 'trip' && !invoice.trajetId) return false;
+          if (filters.type === 'parcel' && !invoice.parcelExpeditionId) return false;
         }
 
         // Filtre par recherche (nom client, numéro de facture, description de dépense)
@@ -418,7 +470,18 @@ export default function Invoices() {
           const matchesNumber = invoice.numero.toLowerCase().includes(searchLower);
           const matchesExpense = expense?.description?.toLowerCase().includes(searchLower) || 
                                  expense?.categorie?.toLowerCase().includes(searchLower);
-          if (!matchesClient && !matchesNumber && !matchesExpense) return false;
+          const parcelHay = parcelEx
+            ? [
+                parcelEx.reference,
+                parcelEx.destination,
+                parcelEx.origine,
+                ...(parcelEx.lots || []).map((l) => `${l.clients} ${l.unite}`),
+              ]
+                .join(' ')
+                .toLowerCase()
+            : '';
+          const matchesParcel = parcelHay.includes(searchLower);
+          if (!matchesClient && !matchesNumber && !matchesExpense && !matchesParcel) return false;
         }
 
         // Filtre par trajet (seulement pour les factures de trajets)
@@ -426,10 +489,12 @@ export default function Invoices() {
           if (invoice.trajetId !== filters.tripId) return false;
         }
 
-        // Filtre par chauffeur (pour trajets et dépenses)
+        // Filtre par chauffeur (pour trajets, dépenses et envois colis)
         if (filters.driverId) {
-          const driverMatch = trip?.chauffeurId === filters.driverId || 
-                             expense?.chauffeurId === filters.driverId;
+          const driverMatch =
+            trip?.chauffeurId === filters.driverId ||
+            expense?.chauffeurId === filters.driverId ||
+            parcelEx?.chauffeurId === filters.driverId;
           if (!driverMatch) return false;
         }
 
@@ -462,7 +527,7 @@ export default function Invoices() {
 
         return true;
       }),
-    [invoices, filters, trips, expenses],
+    [invoices, filters, trips, expenses, parcelExpeditions],
   );
 
   const sortedInvoices = useMemo(() => {
@@ -473,6 +538,11 @@ export default function Invoices() {
           ? thirdParties.find((tp) => tp.id === expense.fournisseurId)
           : null;
         return supplier?.nom || '';
+      }
+      if (inv.parcelExpeditionId) {
+        const ex = parcelExpeditions.find((e) => e.id === inv.parcelExpeditionId);
+        const clients = ex?.lots?.map((l) => l.clients).filter(Boolean).join(', ');
+        return clients || ex?.reference || '';
       }
       const trip = trips.find((t) => t.id === inv.trajetId);
       return trip?.client || '';
@@ -507,7 +577,7 @@ export default function Invoices() {
       default:
         return stableSort(list, (a, b) => parseDateMs(b.dateCreation) - parseDateMs(a.dateCreation));
     }
-  }, [filteredInvoices, listSort, trips, expenses, thirdParties]);
+  }, [filteredInvoices, listSort, trips, expenses, thirdParties, parcelExpeditions]);
 
   // Fonction pour réinitialiser les filtres
   const resetFilters = () => {
@@ -531,7 +601,12 @@ export default function Invoices() {
     const parts: string[] = [];
     if (filters.searchTerm) parts.push(`Recherche: "${filters.searchTerm}"`);
     if (filters.type) {
-      parts.push(`Type: ${filters.type === 'expense' ? 'Dépense' : 'Trajet'}`);
+      const typeLabels: Record<string, string> = {
+        expense: 'Dépense',
+        trip: 'Trajet',
+        parcel: 'Envoi colis',
+      };
+      parts.push(`Type: ${typeLabels[filters.type] ?? filters.type}`);
     }
     if (filters.tripId) parts.push(`Trajet filtré`);
     if (filters.driverId) parts.push(`Chauffeur filtré`);
@@ -572,12 +647,17 @@ export default function Invoices() {
         { header: 'Numéro', value: (inv) => inv.numero },
         {
           header: 'Type',
-          value: (inv) => inv.expenseId ? 'Dépense' : 'Trajet',
+          value: (inv) =>
+            inv.expenseId ? 'Dépense' : inv.parcelExpeditionId ? 'Envoi colis' : 'Trajet',
         },
         {
-          header: 'Statut trajet',
+          header: 'Statut mission',
           value: (inv) => {
             if (inv.expenseId) return '—';
+            if (inv.parcelExpeditionId) {
+              const ex = getParcelExpedition(inv.parcelExpeditionId);
+              return ex ? formatTripStatusFr(ex.statut) : '—';
+            }
             const trip = getTrip(inv.trajetId);
             return trip ? formatTripStatusFr(trip.statut) : '—';
           },
@@ -588,9 +668,12 @@ export default function Invoices() {
             if (inv.expenseId) {
               const expense = getExpense(inv.expenseId);
               return expense ? expense.description : '';
-            } else {
-              return getTripLabel(inv.trajetId);
             }
+            if (inv.parcelExpeditionId) {
+              const ex = getParcelExpedition(inv.parcelExpeditionId);
+              return ex ? `${ex.origine} → ${ex.destination} · ${ex.reference}` : '';
+            }
+            return getTripLabel(inv.trajetId);
           },
         },
         {
@@ -600,22 +683,28 @@ export default function Invoices() {
               const expense = getExpense(inv.expenseId);
               const supplier = expense?.fournisseurId ? thirdParties.find(tp => tp.id === expense.fournisseurId) : null;
               return supplier?.nom || '';
-            } else {
-              const trip = getTrip(inv.trajetId);
-              return trip?.client || '';
             }
+            if (inv.parcelExpeditionId) {
+              const ex = getParcelExpedition(inv.parcelExpeditionId);
+              return ex?.lots?.map((l) => l.clients).filter(Boolean).join(' · ') || '';
+            }
+            const trip = getTrip(inv.trajetId);
+            return trip?.client || '';
           },
         },
         {
-          header: 'Catégorie/Marchandise',
+          header: 'Catégorie / marchandise',
           value: (inv) => {
             if (inv.expenseId) {
               const expense = getExpense(inv.expenseId);
               return expense ? `${expense.categorie}${expense.sousCategorie ? ' - ' + expense.sousCategorie : ''}` : '';
-            } else {
-              const trip = getTrip(inv.trajetId);
-              return trip?.marchandise || '';
             }
+            if (inv.parcelExpeditionId) {
+              const ex = getParcelExpedition(inv.parcelExpeditionId);
+              return ex ? `${ex.lots.length} ligne(s) colis` : '';
+            }
+            const trip = getTrip(inv.trajetId);
+            return trip?.marchandise || '';
           },
         },
         {
@@ -807,7 +896,14 @@ export default function Invoices() {
     try {
       const trip = getTrip(selectedInvoice.trajetId);
       const expense = getExpense(selectedInvoice.expenseId);
-      const driver = trip ? drivers.find((d) => d.id === trip.chauffeurId) : null;
+      const parcelEx = getParcelExpedition(selectedInvoice.parcelExpeditionId);
+      const driver = trip?.chauffeurId
+        ? drivers.find((d) => d.id === trip.chauffeurId)
+        : parcelEx?.chauffeurId
+          ? drivers.find((d) => d.id === parcelEx.chauffeurId)
+          : expense?.chauffeurId
+            ? drivers.find((d) => d.id === expense.chauffeurId)
+            : null;
       const expenseSupplier = expense?.fournisseurId
         ? thirdParties.find((tp) => tp.id === expense.fournisseurId)
         : null;
@@ -820,6 +916,7 @@ export default function Invoices() {
         resteAPayer,
         trip,
         expense,
+        parcelExpedition: parcelEx ?? null,
         driver: driver ?? null,
         fournisseurNom: expenseSupplier?.nom ?? null,
         getTruckLabel,
@@ -983,6 +1080,33 @@ export default function Invoices() {
                   </div>
                 </div>
 
+                <div className="space-y-2">
+                  <Label>Type de mission</Label>
+                  <RadioGroup
+                    value={invoiceMissionKind}
+                    onValueChange={(v) => {
+                      setInvoiceMissionKind(v as 'trip' | 'parcel');
+                      setSelectedTripId('');
+                      setSelectedParcelExpeditionId('');
+                    }}
+                    className="flex flex-wrap gap-4"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="trip" id="inv-kind-trip" />
+                      <Label htmlFor="inv-kind-trip" className="font-normal cursor-pointer">
+                        Trajet
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="parcel" id="inv-kind-parcel" />
+                      <Label htmlFor="inv-kind-parcel" className="font-normal cursor-pointer">
+                        Envoi colis
+                      </Label>
+                    </div>
+                  </RadioGroup>
+                </div>
+
+                {invoiceMissionKind === 'trip' && (
                 <div>
                   <Label htmlFor="trip">Sélectionner un trajet *</Label>
                   <Select value={selectedTripId} onValueChange={setSelectedTripId}>
@@ -1042,9 +1166,52 @@ export default function Invoices() {
                     </SelectContent>
                   </Select>
                 </div>
+                )}
+
+                {invoiceMissionKind === 'parcel' && (
+                <div>
+                  <Label htmlFor="parcel-ex">Sélectionner un envoi colis *</Label>
+                  <Select value={selectedParcelExpeditionId} onValueChange={setSelectedParcelExpeditionId}>
+                    <SelectTrigger id="parcel-ex">
+                      <SelectValue placeholder="Réf. · destination · CA" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableParcelExpeditions.length === 0 ? (
+                        <div className="p-4 text-sm text-muted-foreground text-center">
+                          <p className="mb-2">{EMOJI.alerte} Aucun envoi colis disponible</p>
+                          <p className="text-xs">
+                            CA lignes &gt; 0, pas annulé, sans facture déjà créée.
+                          </p>
+                        </div>
+                      ) : (
+                        availableParcelExpeditions.map((ex) => {
+                          const ca = sumParcelExpeditionLotsCa(ex);
+                          const shortId = ex.id.slice(-6);
+                          return (
+                            <SelectItem key={ex.id} value={ex.id} className="py-2">
+                              <div className="flex flex-col gap-1">
+                                <span className="font-mono text-xs font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded w-fit">
+                                  {ex.reference}
+                                </span>
+                                <span className="font-semibold">
+                                  {ex.origine} → {ex.destination}
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                  {new Date(ex.dateDepart).toLocaleDateString('fr-FR')} · CA lignes{' '}
+                                  {ca.toLocaleString('fr-FR')} FCFA · ID …{shortId}
+                                </span>
+                              </div>
+                            </SelectItem>
+                          );
+                        })
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                )}
 
                 {/* Afficher TOUTES les détails du trajet sélectionné */}
-                {selectedTripId && (() => {
+                {invoiceMissionKind === 'trip' && selectedTripId && (() => {
                   const selectedTrip = getTrip(selectedTripId);
                   if (!selectedTrip) return null;
                   const driver = drivers.find(d => d.id === selectedTrip.chauffeurId);
@@ -1200,6 +1367,55 @@ export default function Invoices() {
                   );
                 })()}
 
+                {invoiceMissionKind === 'parcel' && selectedParcelExpeditionId && (() => {
+                  const ex = getParcelExpedition(selectedParcelExpeditionId);
+                  if (!ex) return null;
+                  const driver = drivers.find((d) => d.id === ex.chauffeurId);
+                  const ca = sumParcelExpeditionLotsCa(ex);
+                  return (
+                    <div className="bg-gradient-to-br from-sky-500/10 to-cyan-500/5 border-2 border-sky-500/25 rounded-lg p-5 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <Label className="text-base font-bold flex items-center gap-2">
+                          <Package className="h-4 w-4" />
+                          Détail envoi colis (base HT facture = CA lignes)
+                        </Label>
+                        <Badge variant="outline">
+                          {formatTripStatusFr(ex.statut)}
+                        </Badge>
+                      </div>
+                      <p className="text-lg font-bold text-primary">
+                        {ex.origine} → {ex.destination}
+                      </p>
+                      <p className="text-sm text-muted-foreground font-mono">{ex.reference}</p>
+                      <div className="grid sm:grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">Départ</span>
+                          <p className="font-medium">{new Date(ex.dateDepart).toLocaleDateString('fr-FR')}</p>
+                        </div>
+                        {ex.dateArrivee && (
+                          <div>
+                            <span className="text-muted-foreground">Arrivée</span>
+                            <p className="font-medium">{new Date(ex.dateArrivee).toLocaleDateString('fr-FR')}</p>
+                          </div>
+                        )}
+                        {driver && (
+                          <div>
+                            <span className="text-muted-foreground">Chauffeur</span>
+                            <p className="font-medium">{driver.prenom} {driver.nom}</p>
+                          </div>
+                        )}
+                        <div>
+                          <span className="text-muted-foreground">CA lignes</span>
+                          <p className="font-bold text-primary">{ca.toLocaleString('fr-FR')} FCFA</p>
+                        </div>
+                      </div>
+                      {ex.description && (
+                        <p className="text-xs text-muted-foreground border-t pt-2">{ex.description}</p>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 <div>
                   <Label htmlFor="modePaiement">Mode de paiement (optionnel)</Label>
                   <Select value={modePaiement || 'none'} onValueChange={(value) => setModePaiement(value === 'none' ? '' : value)}>
@@ -1217,11 +1433,15 @@ export default function Invoices() {
                 </div>
 
                 {/* Section Remise, TVA et TPS */}
-                {selectedTripId && (() => {
-                  const selectedTrip = getTrip(selectedTripId);
-                  if (!selectedTrip) return null;
-                  
-                  const montantHTInitial = selectedTrip.recette;
+                {(invoiceMissionKind === 'trip' ? selectedTripId : selectedParcelExpeditionId) && (() => {
+                  const montantHTInitial =
+                    invoiceMissionKind === 'trip'
+                      ? (getTrip(selectedTripId)?.recette ?? 0)
+                      : (() => {
+                          const ex = getParcelExpedition(selectedParcelExpeditionId);
+                          return ex ? sumParcelExpeditionLotsCa(ex) : 0;
+                        })();
+                  if (montantHTInitial <= 0) return null;
                   const montantRemise = montantHTInitial * (remise / 100);
                   const montantHTApresRemise = montantHTInitial - montantRemise;
                   const montantTVA = montantHTApresRemise * (tva / 100);
@@ -1633,385 +1853,6 @@ export default function Invoices() {
               </div>
             </DialogContent>
           </Dialog>
-          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-            <DialogContent className="w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Créer une facture professionnelle</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4">
-                {/* Afficher le numéro de facture qui sera généré */}
-                <div className="bg-primary/10 border border-primary/20 rounded-lg p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label className="text-sm font-medium text-muted-foreground">Numéro de facture qui sera attribué :</Label>
-                      <p className="text-2xl font-bold text-primary mt-1 font-mono">{nextInvoiceNumber}</p>
-                    </div>
-                    <div className="p-3 bg-primary/20 rounded-lg">
-                      <FileText className="h-8 w-8 text-primary" />
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <Label htmlFor="trip">Sélectionner un trajet *</Label>
-                <Select value={selectedTripId} onValueChange={setSelectedTripId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Sélectionner un trajet">
-                      {selectedTripId && (() => {
-                        const selectedTrip = getTrip(selectedTripId);
-                        if (!selectedTrip) return selectedTripId;
-                        const shortId = selectedTripId.slice(-6);
-                        return `[ID: ${shortId}] ${selectedTrip.origine} → ${selectedTrip.destination}`;
-                      })()}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableTrips.length === 0 ? (
-                      <div className="p-4 text-sm text-muted-foreground text-center">
-                        <p className="mb-2">{EMOJI.alerte} Aucun trajet disponible pour facturation</p>
-                        <p className="text-xs">
-                          Pour créer une facture, le trajet doit :<br/>
-                          • Avoir une recette &gt; 0 FCFA<br/>
-                          • Ne pas avoir de facture existante
-                        </p>
-                      </div>
-                    ) : (
-                      availableTrips.map(trip => {
-                        const statusLabels = {
-                          planifie: 'Planifié',
-                          en_cours: 'En cours',
-                          termine: 'Terminé',
-                          annule: 'Annulé'
-                        };
-                        const tripDetails = getTrip(trip.id);
-                        const driver = tripDetails ? drivers.find(d => d.id === tripDetails.chauffeurId) : null;
-                        // Extraire les 6 derniers caractères de l'ID pour un affichage plus court
-                        const shortId = trip.id.slice(-6);
-                        const dateDepart = tripDetails ? new Date(tripDetails.dateDepart).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
-                        
-                        return (
-                          <SelectItem key={trip.id} value={trip.id} className="py-2">
-                            <div className="flex flex-col gap-1">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-mono text-xs font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">ID: {shortId}</span>
-                                <span className="font-semibold">{trip.origine} → {trip.destination}</span>
-                              </div>
-                              <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
-                                {dateDepart && <span>{EMOJI.date} {dateDepart}</span>}
-                                {driver && <span>{EMOJI.personne} {driver.prenom} {driver.nom}</span>}
-                                {tripDetails?.client && <span>🏢 {tripDetails.client}</span>}
-                                <span className="font-semibold text-primary">{trip.recette.toLocaleString('fr-FR')} FCFA</span>
-                                <span>({statusLabels[trip.statut]})</span>
-                              </div>
-                            </div>
-                          </SelectItem>
-                        );
-                      })
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Afficher TOUTES les détails du trajet sélectionné */}
-              {selectedTripId && (() => {
-                const selectedTrip = getTrip(selectedTripId);
-                if (!selectedTrip) return null;
-                const driver = drivers.find(d => d.id === selectedTrip.chauffeurId);
-                const tracteur = selectedTrip.tracteurId ? trucks.find(t => t.id === selectedTrip.tracteurId) : null;
-                const remorqueuse = selectedTrip.remorqueuseId ? trucks.find(t => t.id === selectedTrip.remorqueuseId) : null;
-                
-                const getStatusLabel = (statut: string) => {
-                  const labels: Record<string, string> = {
-                    planifie: 'Planifié',
-                    en_cours: 'En cours',
-                    termine: 'Terminé',
-                    annule: 'Annulé'
-                  };
-                  return labels[statut] || statut;
-                };
-
-                const getStatusColor = (statut: string) => {
-                  const colors: Record<string, string> = {
-                    planifie: 'bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400',
-                    en_cours: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30 dark:text-yellow-400',
-                    termine: 'bg-green-100 text-green-700 dark:bg-green-950/30 dark:text-green-400',
-                    annule: 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400'
-                  };
-                  return colors[statut] || '';
-                };
-
-                return (
-                  <div className="bg-gradient-to-br from-muted/50 to-muted/30 border-2 border-primary/20 rounded-lg p-5 space-y-4 shadow-md">
-                    {/* En-tête avec ID */}
-                    <div className="flex items-center justify-between pb-3 border-b border-border">
-                      <Label className="text-base font-bold">{EMOJI.liste} Informations complètes du trajet</Label>
-                      <div className="flex items-center gap-2">
-                        <Badge className={getStatusColor(selectedTrip.statut)}>
-                          {getStatusLabel(selectedTrip.statut)}
-                        </Badge>
-                        <span className="font-mono text-xs bg-primary/20 text-primary px-3 py-1.5 rounded font-bold border border-primary/30">
-                          ID: {selectedTripId}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Informations principales */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Itinéraire */}
-                      <div className="md:col-span-2 bg-primary/5 rounded-lg p-3 border border-primary/10">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-xs font-semibold text-muted-foreground uppercase">Itinéraire</span>
-                        </div>
-                        <p className="text-lg font-bold text-primary">
-                          {selectedTrip.origine} → {selectedTrip.destination}
-                        </p>
-                      </div>
-
-                      {/* Dates */}
-                      <div className="space-y-2">
-                        <div>
-                          <span className="text-xs font-semibold text-muted-foreground">{EMOJI.date} Date de départ</span>
-                          <p className="text-sm font-medium mt-1">{new Date(selectedTrip.dateDepart).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
-                        </div>
-                        {selectedTrip.dateArrivee && (
-                          <div>
-                            <span className="text-xs font-semibold text-muted-foreground">{EMOJI.date} Date d'arrivée</span>
-                            <p className="text-sm font-medium mt-1">{new Date(selectedTrip.dateArrivee).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
-                          </div>
-                        )}
-                        {!selectedTrip.dateArrivee && (
-                          <div>
-                            <span className="text-xs font-semibold text-muted-foreground">{EMOJI.date} Date d'arrivée</span>
-                            <p className="text-sm text-muted-foreground italic mt-1">À définir</p>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Chauffeur */}
-                      {driver && (
-                        <div className="space-y-2">
-                          <div>
-                            <span className="text-xs font-semibold text-muted-foreground">{EMOJI.personne} Chauffeur</span>
-                            <p className="text-sm font-medium mt-1">{driver.prenom} {driver.nom}</p>
-                            {driver.telephone && (
-                              <p className="text-xs text-muted-foreground mt-1">{EMOJI.telephone} {driver.telephone}</p>
-                            )}
-                            {driver.cni && (
-                              <p className="text-xs text-muted-foreground">🪪 CNI: {driver.cni}</p>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Tracteur */}
-                      {tracteur && (
-                        <div className="space-y-2">
-                          <div>
-                            <span className="text-xs font-semibold text-muted-foreground">{EMOJI.camion} Tracteur</span>
-                            <p className="text-sm font-medium mt-1">{tracteur.immatriculation}</p>
-                            <p className="text-xs text-muted-foreground mt-1">Modèle: {tracteur.modele}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Remorqueuse */}
-                      {remorqueuse && (
-                        <div className="space-y-2">
-                          <div>
-                            <span className="text-xs font-semibold text-muted-foreground">🚚 Remorqueuse</span>
-                            <p className="text-sm font-medium mt-1">{remorqueuse.immatriculation}</p>
-                            <p className="text-xs text-muted-foreground mt-1">Modèle: {remorqueuse.modele}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Client */}
-                      {selectedTrip.client && (
-                        <div className="space-y-2">
-                          <div>
-                            <span className="text-xs font-semibold text-muted-foreground">🏢 Client</span>
-                            <p className="text-sm font-medium mt-1">{selectedTrip.client}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Marchandise */}
-                      {selectedTrip.marchandise && (
-                        <div className="space-y-2">
-                          <div>
-                            <span className="text-xs font-semibold text-muted-foreground">📦 Marchandise</span>
-                            <p className="text-sm font-medium mt-1">{selectedTrip.marchandise}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Recette */}
-                      <div className="md:col-span-2 bg-green-50 dark:bg-green-950/20 rounded-lg p-3 border-2 border-green-200 dark:border-green-800">
-                        <span className="text-xs font-semibold text-green-700 dark:text-green-400">{EMOJI.argent} Recette</span>
-                        <p className="text-2xl font-bold text-green-700 dark:text-green-400 mt-1">
-                          {selectedTrip.recette.toLocaleString('fr-FR')} FCFA
-                        </p>
-                      </div>
-
-                      {/* Description */}
-                      {selectedTrip.description && (
-                        <div className="md:col-span-2 space-y-2">
-                          <div>
-                            <span className="text-xs font-semibold text-muted-foreground">📝 Description</span>
-                            <p className="text-sm mt-1 bg-background/50 p-2 rounded border border-border">
-                              {selectedTrip.description}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div>
-                <Label htmlFor="modePaiement">Mode de paiement (optionnel)</Label>
-                <Select value={modePaiement || 'none'} onValueChange={(value) => setModePaiement(value === 'none' ? '' : value)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Sélectionner" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Aucun</SelectItem>
-                    <SelectItem value="Espèces">Espèces</SelectItem>
-                    <SelectItem value="Virement bancaire">Virement bancaire</SelectItem>
-                    <SelectItem value="Chèque">Chèque</SelectItem>
-                    <SelectItem value="Mobile Money">Mobile Money</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Section Remise, TVA et TPS */}
-              {selectedTripId && (() => {
-                const selectedTrip = getTrip(selectedTripId);
-                if (!selectedTrip) return null;
-                
-                const montantHTInitial = selectedTrip.recette;
-                const montantRemise = montantHTInitial * (remise / 100);
-                const montantHTApresRemise = montantHTInitial - montantRemise;
-                const montantTVA = montantHTApresRemise * (tva / 100);
-                const montantTPS = montantHTApresRemise * (tps / 100);
-                const montantTTC = montantHTApresRemise + montantTVA + montantTPS;
-
-                return (
-                  <div className="space-y-4 border-t pt-4">
-                    {/* Remise */}
-                    <div>
-                      <Label className="text-base font-semibold mb-3 block">Remise (optionnel)</Label>
-                      <div>
-                        <Label htmlFor="remise">Remise (%)</Label>
-                        <NumberInput
-                          id="remise"
-                          value={remise}
-                          onChange={(value) => setRemise(value || 0)}
-                          min={0}
-                          max={100}
-                          step={0.1}
-                          placeholder="0"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">Ex: 10 pour 10% de remise</p>
-                      </div>
-                    </div>
-
-                    {/* TVA et TPS */}
-                    <div>
-                      <Label className="text-base font-semibold mb-3 block">Taux et taxes</Label>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div>
-                          <Label htmlFor="tva">TVA (%)</Label>
-                          <NumberInput
-                            id="tva"
-                            value={tva}
-                            onChange={(value) => setTva(value || 0)}
-                            min={0}
-                            max={100}
-                            step={0.1}
-                            placeholder="0"
-                          />
-                          <p className="text-xs text-muted-foreground mt-1">Ex: 19.25 pour 19.25%</p>
-                        </div>
-                        <div>
-                          <Label htmlFor="tps">TPS (%)</Label>
-                          <NumberInput
-                            id="tps"
-                            value={tps}
-                            onChange={(value) => setTps(value || 0)}
-                            min={0}
-                            max={100}
-                            step={0.1}
-                            placeholder="0"
-                          />
-                          <p className="text-xs text-muted-foreground mt-1">Ex: 5 pour 5%</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Aperçu du calcul */}
-                    <div className="bg-muted/50 border border-border rounded-lg p-4 space-y-2">
-                      <Label className="text-sm font-semibold">Aperçu du calcul :</Label>
-                      <div className="space-y-1 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Montant HT initial :</span>
-                          <span className="font-medium">{montantHTInitial.toLocaleString('fr-FR')} FCFA</span>
-                        </div>
-                        {remise > 0 && (
-                          <>
-                            <div className="flex justify-between text-orange-600 dark:text-orange-400">
-                              <span>Remise ({remise}%) :</span>
-                              <span className="font-medium">-{montantRemise.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} FCFA</span>
-                            </div>
-                            <div className="flex justify-between pt-1 border-t border-border">
-                              <span className="text-muted-foreground">Montant HT après remise :</span>
-                              <span className="font-semibold">{montantHTApresRemise.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} FCFA</span>
-                            </div>
-                          </>
-                        )}
-                        {tva > 0 && (
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">TVA ({tva}%) :</span>
-                            <span className="font-medium">{montantTVA.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} FCFA</span>
-                          </div>
-                        )}
-                        {tps > 0 && (
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">TPS ({tps}%) :</span>
-                            <span className="font-medium">{montantTPS.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} FCFA</span>
-                          </div>
-                        )}
-                        <div className="flex justify-between pt-2 border-t border-border font-bold text-lg">
-                          <span>Montant TTC :</span>
-                          <span className="text-primary">{montantTTC.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} FCFA</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div>
-                <Label htmlFor="notes">Notes (optionnel)</Label>
-                <Input
-                  id="notes"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Remarques ou commentaires"
-                />
-              </div>
-
-                <Button onClick={handleCreateInvoice} className="w-full" disabled={isCreatingTripInvoice}>
-                  {isCreatingTripInvoice ? (
-                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Création...</>
-                  ) : (
-                    'Créer la facture'
-                  )}
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
         </div>
         }
       />
@@ -2064,6 +1905,7 @@ export default function Invoices() {
                 <SelectContent>
                   <SelectItem value="all">Tous les types</SelectItem>
                   <SelectItem value="trip">{EMOJI.camion} Trajets</SelectItem>
+                  <SelectItem value="parcel">📦 Envois colis</SelectItem>
                   <SelectItem value="expense">{EMOJI.argent} Dépenses</SelectItem>
                 </SelectContent>
               </Select>
@@ -2111,7 +1953,8 @@ export default function Invoices() {
                       .map(inv => {
                         const trip = getTrip(inv.trajetId);
                         const expense = getExpense(inv.expenseId);
-                        return trip?.chauffeurId || expense?.chauffeurId;
+                        const parcelEx = getParcelExpedition(inv.parcelExpeditionId);
+                        return trip?.chauffeurId || expense?.chauffeurId || parcelEx?.chauffeurId;
                       })
                       .filter(Boolean) as string[]
                   )).map(driverId => {
@@ -2275,7 +2118,9 @@ export default function Invoices() {
                 sortedInvoices.map((invoice) => {
                   const trip = getTrip(invoice.trajetId);
                   const expense = getExpense(invoice.expenseId);
+                  const parcelExRow = getParcelExpedition(invoice.parcelExpeditionId);
                   const isExpenseInvoice = !!invoice.expenseId;
+                  const isParcelInvoice = !!invoice.parcelExpeditionId;
                   
                   return (
                     <TableRow key={invoice.id} className="hover:bg-muted/50 transition-colors duration-200 [&>td]:align-top">
@@ -2288,6 +2133,10 @@ export default function Invoices() {
                         {isExpenseInvoice ? (
                           <Badge variant="outline" className="bg-orange-100 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400 border-orange-300">
                             {EMOJI.argent} Dépense
+                          </Badge>
+                        ) : isParcelInvoice ? (
+                          <Badge variant="outline" className="bg-sky-100 text-sky-800 dark:bg-sky-950/30 dark:text-sky-300 border-sky-300">
+                            📦 Envoi colis
                           </Badge>
                         ) : (
                           <Badge variant="outline" className="bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border-blue-300">
@@ -2323,6 +2172,19 @@ export default function Invoices() {
                                 Fournisseur: {thirdParties.find(tp => tp.id === expense.fournisseurId)?.nom || '-'}
                               </div>
                             )}
+                          </div>
+                        ) : isParcelInvoice && parcelExRow ? (
+                          <div>
+                            <div className="font-medium">
+                              {parcelExRow.reference} · {parcelExRow.origine} → {parcelExRow.destination}
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-1">
+                              {parcelExRow.lots.length} ligne{parcelExRow.lots.length > 1 ? 's' : ''} ·{' '}
+                              {formatTripStatusFr(parcelExRow.statut)}
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-1">
+                              Chauffeur : {getDriverName(parcelExRow.chauffeurId)}
+                            </div>
                           </div>
                         ) : trip ? (
                           <div>
@@ -2440,7 +2302,15 @@ export default function Invoices() {
           {selectedInvoice && (() => {
             const trip = getTrip(selectedInvoice.trajetId);
             const expense = getExpense(selectedInvoice.expenseId);
-            const driver = drivers.find(d => d.id === trip?.chauffeurId || d.id === expense?.chauffeurId);
+            const parcelEx = getParcelExpedition(selectedInvoice.parcelExpeditionId);
+            const isParcelInvoice = !!selectedInvoice.parcelExpeditionId;
+            const driver = trip?.chauffeurId
+              ? drivers.find((d) => d.id === trip.chauffeurId)
+              : parcelEx?.chauffeurId
+                ? drivers.find((d) => d.id === parcelEx.chauffeurId)
+                : expense?.chauffeurId
+                  ? drivers.find((d) => d.id === expense.chauffeurId)
+                  : undefined;
             const isExpenseInvoice = !!selectedInvoice.expenseId;
             const expenseDriver = expense?.chauffeurId ? drivers.find(d => d.id === expense.chauffeurId) : null;
             const expenseTruck = expense?.camionId ? trucks.find(t => t.id === expense.camionId) : null;
@@ -2456,6 +2326,10 @@ export default function Invoices() {
                       {isExpenseInvoice ? (
                         <Badge variant="outline" className="bg-orange-100 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400 border-orange-300">
                           {EMOJI.argent} Dépense
+                        </Badge>
+                      ) : isParcelInvoice ? (
+                        <Badge variant="outline" className="bg-sky-100 text-sky-800 dark:bg-sky-950/30 dark:text-sky-300 border-sky-300">
+                          📦 Envoi colis
                         </Badge>
                       ) : (
                         <Badge variant="outline" className="bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border-blue-300">
@@ -2529,6 +2403,13 @@ export default function Invoices() {
                           <>
                             <p className="text-sm text-muted-foreground">Fournisseur:</p>
                             <p className="font-semibold">{expenseSupplier?.nom || 'N/A'}</p>
+                          </>
+                        ) : isParcelInvoice && parcelEx ? (
+                          <>
+                            <p className="text-sm text-muted-foreground">Clients (lignes colis)</p>
+                            <p className="font-semibold max-w-md ml-auto">
+                              {[...new Set(parcelEx.lots.map((l) => l.clients?.trim()).filter(Boolean) as string[])].join(', ') || '—'}
+                            </p>
                           </>
                         ) : (
                           <>
@@ -2685,6 +2566,92 @@ export default function Invoices() {
                         }
                         return null;
                       })()}
+                    </div>
+                  ) : isParcelInvoice && parcelEx ? (
+                    <div className="space-y-4">
+                      <div>
+                        <h4 className="font-semibold mb-3">Détails de l&apos;envoi colis</h4>
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between gap-4">
+                            <span className="text-muted-foreground shrink-0">Référence</span>
+                            <span className="font-medium text-right">{parcelEx.reference}</span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-muted-foreground shrink-0">Itinéraire</span>
+                            <span className="font-medium text-right">{parcelEx.origine} → {parcelEx.destination}</span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-muted-foreground shrink-0">Statut</span>
+                            <span className={`font-medium ${parcelEx.statut === 'annule' ? 'text-red-600 dark:text-red-400' : ''}`}>
+                              {formatTripStatusFr(parcelEx.statut)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-muted-foreground shrink-0">Chauffeur</span>
+                            <span className="font-medium text-right">
+                              {driver ? `${driver.prenom} ${driver.nom}` : 'N/A'}
+                              {driver?.telephone ? ` · ${driver.telephone}` : ''}
+                            </span>
+                          </div>
+                          {parcelEx.tracteurId && (
+                            <div className="flex justify-between gap-4">
+                              <span className="text-muted-foreground shrink-0">Tracteur</span>
+                              <span className="font-medium text-right">{getTruckLabel(parcelEx.tracteurId)}</span>
+                            </div>
+                          )}
+                          {parcelEx.remorqueuseId && (
+                            <div className="flex justify-between gap-4">
+                              <span className="text-muted-foreground shrink-0">Remorque</span>
+                              <span className="font-medium text-right">{getTruckLabel(parcelEx.remorqueuseId)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between gap-4">
+                            <span className="text-muted-foreground shrink-0">Départ</span>
+                            <span className="font-medium text-right">{new Date(parcelEx.dateDepart).toLocaleDateString('fr-FR')}</span>
+                          </div>
+                          {parcelEx.dateArrivee?.trim() && (
+                            <div className="flex justify-between gap-4">
+                              <span className="text-muted-foreground shrink-0">Arrivée</span>
+                              <span className="font-medium text-right">{new Date(parcelEx.dateArrivee).toLocaleDateString('fr-FR')}</span>
+                            </div>
+                          )}
+                          {parcelEx.description?.trim() && (
+                            <div className="flex justify-between gap-4 items-start">
+                              <span className="text-muted-foreground shrink-0">Notes expédition</span>
+                              <span className="font-medium text-right max-w-[70%]">{parcelEx.description}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <h4 className="font-semibold mb-2">Lignes (CA facturé)</h4>
+                        <div className="rounded-md border overflow-x-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Client / ligne</TableHead>
+                                <TableHead>Unité</TableHead>
+                                <TableHead className="text-right">Qté</TableHead>
+                                <TableHead className="text-right">PU</TableHead>
+                                <TableHead className="text-right">Montant</TableHead>
+                                <TableHead>Obs.</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {parcelEx.lots.map((l) => (
+                                <TableRow key={l.id}>
+                                  <TableCell className="text-sm">{l.clients}</TableCell>
+                                  <TableCell className="text-sm">{l.unite}</TableCell>
+                                  <TableCell className="text-sm text-right">{l.quantite.toLocaleString('fr-FR')}</TableCell>
+                                  <TableCell className="text-sm text-right">{l.prixUnitaire.toLocaleString('fr-FR')}</TableCell>
+                                  <TableCell className="text-sm text-right font-medium">{l.montant.toLocaleString('fr-FR')}</TableCell>
+                                  <TableCell className="text-xs text-muted-foreground">{l.observations || '—'}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
                     </div>
                   ) : trip ? (
                     <div>

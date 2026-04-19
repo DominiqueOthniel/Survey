@@ -10,6 +10,10 @@ export class CreateInvoiceDto {
 
   @IsOptional()
   @IsString()
+  parcelExpeditionId?: string;
+
+  @IsOptional()
+  @IsString()
   expenseId?: string;
 
   @IsString()

@@ -77,7 +77,14 @@ export default function PageHeader({
 
         {/* Stats */}
         {stats && stats.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+          <div
+            className={cn(
+              'grid gap-2 sm:gap-3',
+              stats.length > 4
+                ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5'
+                : 'grid-cols-2 sm:grid-cols-2 lg:grid-cols-4',
+            )}
+          >
             {stats.map((stat, i) => (
               <div
                 key={i}

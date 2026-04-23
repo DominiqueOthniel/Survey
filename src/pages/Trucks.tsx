@@ -9,10 +9,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Plus, Edit, Trash2, Filter, Eye, Truck as TruckIcon, Search, X, Route, DollarSign, FileDown, FileText, Satellite, MapPin, Loader2 } from 'lucide-react';
+import { Plus, Edit, Trash2, Filter, Eye, Truck as TruckIcon, Link2, Search, X, Route, DollarSign, FileDown, FileText, Satellite, MapPin, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { isTruckInUse, calculateTruckStats } from '@/lib/sync-utils';
+import {
+  isTruckInUse,
+  calculateTruckStats,
+  countRemorquesForFleetStats,
+  countTracteursJumeles,
+} from '@/lib/sync-utils';
 import PageHeader from '@/components/PageHeader';
 import { useAuth } from '@/contexts/AuthContext';
 import { exportToExcel, exportToPrintablePDF } from '@/lib/export-utils';
@@ -354,7 +359,8 @@ export default function Trucks() {
 
   const activeTrucks = trucks.filter(t => t.statut === 'actif').length;
   const tracteurs = trucks.filter(t => t.type === 'tracteur').length;
-  const remorques = trucks.filter(t => t.type === 'remorqueuse').length;
+  const jumeles = countTracteursJumeles(trucks);
+  const remorques = countRemorquesForFleetStats(trucks);
 
   // Fonction pour générer la description des filtres
   const getFiltersDescription = () => {
@@ -497,7 +503,13 @@ export default function Trucks() {
             color: 'text-orange-600 dark:text-orange-400'
           },
           {
-            label: 'Remorques',
+            label: 'Jumelés',
+            value: jumeles,
+            icon: <Link2 className="h-4 w-4" />,
+            color: 'text-amber-600 dark:text-amber-400'
+          },
+          {
+            label: 'Remorques (fiches + jumelées)',
             value: remorques,
             icon: <TruckIcon className="h-4 w-4" />,
             color: 'text-purple-600 dark:text-purple-400'

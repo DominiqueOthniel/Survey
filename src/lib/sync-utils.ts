@@ -166,6 +166,32 @@ export const isTruckInUse = (
   );
 };
 
+/** Tracteur avec remorque sur la même fiche (type jumelé ou plaque remorque renseignée). */
+export const truckHasJumeleRemorque = (
+  truck: Pick<Truck, 'type' | 'sousType' | 'remorqueImmatriculation'>,
+): boolean => {
+  if (truck.type !== 'tracteur') return false;
+  if (truck.sousType === 'tracteur_jumele') return true;
+  return !!(truck.remorqueImmatriculation && String(truck.remorqueImmatriculation).trim());
+};
+
+/**
+ * Nombre de remorques pour les stats flotte : fiches « remorqueuse » seules
+ * + une remorque logique par tracteur jumelé (même fiche tracteur + plaque remorque).
+ */
+export const countRemorquesForFleetStats = (
+  trucks: Pick<Truck, 'type' | 'sousType' | 'remorqueImmatriculation'>[],
+): number => {
+  const fichesSeules = trucks.filter((t) => t.type === 'remorqueuse').length;
+  const jumelees = trucks.filter((t) => truckHasJumeleRemorque(t)).length;
+  return fichesSeules + jumelees;
+};
+
+/** Nombre de tracteurs en jumelage (remorque sur la même fiche). */
+export const countTracteursJumeles = (
+  trucks: Pick<Truck, 'type' | 'sousType' | 'remorqueImmatriculation'>[],
+): number => trucks.filter((t) => truckHasJumeleRemorque(t)).length;
+
 /**
  * Vérifie si un chauffeur est actuellement en mission
  */
